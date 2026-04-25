@@ -57,11 +57,13 @@ def init_session_state() -> None:
     """Initialize all session state variables used across tabs."""
     destinations = get_destination_rooms()
     defaults: dict = {
+        "nav_start": START_ROOM,
         "nav_destination": destinations[0] if destinations else None,
         "nav_algorithm": "A*",
         "nav_result": None,
         "pred_result": None,
         "pred_submitted": False,
+        "custom_rooms": dict(ROOMS),
     }
     for key, value in defaults.items():
         if key not in st.session_state:
@@ -75,6 +77,7 @@ init_session_state()
 def plot_hospital_grid(
     path: Optional[List[Tuple[int, int]]] = None,
     explored: Optional[List[Tuple[int, int]]] = None,
+    start_room: Optional[str] = None,
     destination_room: Optional[str] = None
 ) -> plt.Figure:
     """Renders the hospital grid using Matplotlib."""
@@ -87,7 +90,7 @@ def plot_hospital_grid(
     ax.imshow(HOSPITAL_GRID, cmap=cmap)
 
     # Plot all rooms lightly
-    for room, (r, c) in ROOMS.items():
+    for room, (r, c) in st.session_state["custom_rooms"].items():
         color = ROOM_COLORS.get(room, '#ffffff')
         ax.plot(c, r, marker='s', color=color, markersize=16, alpha=0.3)
         # Add text label above the cell
@@ -109,11 +112,12 @@ def plot_hospital_grid(
         ax.plot(path_c, path_r, marker='o', color='#ff5252', markersize=5, linestyle='None', zorder=4)
 
     # Highlight Start and End tightly
-    start_r, start_c = START_COORDS
-    ax.plot(start_c, start_r, marker='s', color=ROOM_COLORS[START_ROOM], markersize=18, markeredgecolor='white', markeredgewidth=2, zorder=5, label=START_ROOM)
+    start_room = start_room or START_ROOM
+    start_r, start_c = st.session_state["custom_rooms"][start_room]
+    ax.plot(start_c, start_r, marker='s', color=ROOM_COLORS.get(start_room, '#ffffff'), markersize=18, markeredgecolor='white', markeredgewidth=2, zorder=5, label=start_room)
     
     if destination_room:
-        dest_r, dest_c = ROOMS[destination_room]
+        dest_r, dest_c = st.session_state["custom_rooms"][destination_room]
         ax.plot(dest_c, dest_r, marker='s', color=ROOM_COLORS[destination_room], markersize=18, markeredgecolor='white', markeredgewidth=2, zorder=5, label=destination_room)
 
     # Grid lines and formatting
@@ -220,8 +224,43 @@ with tab_nav:
     col_nav_controls, col_nav_plot = st.columns([1, 2])
     
     with col_nav_controls:
+        # --- ROOM LOCATION EDITOR ---
+        with st.expander("Customize Rooms"):
+            st.markdown("<p style='font-size: 0.85rem; color: #d1d5db; margin-bottom: 12px;'>Modify the grid coordinates (0-19) for any room. Ensure the cell is not a wall!</p>", unsafe_allow_html=True)
+            
+            edited_rooms = {}
+            for room, (orig_r, orig_c) in st.session_state["custom_rooms"].items():
+                c1, c2, c3 = st.columns([2, 1, 1])
+                c1.markdown(f"<div style='font-size: 0.85rem; padding-top: 8px;'>{room}</div>", unsafe_allow_html=True)
+                new_r = c2.number_input(f"Row", min_value=0, max_value=19, value=orig_r, key=f"r_{room}", label_visibility="collapsed")
+                new_c = c3.number_input(f"Col", min_value=0, max_value=19, value=orig_c, key=f"c_{room}", label_visibility="collapsed")
+                edited_rooms[room] = (new_r, new_c)
+            
+            if st.button("Update Layout", type="secondary", use_container_width=True):
+                valid = True
+                for rm, (nr, nc) in edited_rooms.items():
+                    if HOSPITAL_GRID[nr, nc] == 1:
+                        st.error(f"Cannot place **{rm}** at ({nr}, {nc}) because it is a wall.")
+                        valid = False
+                        break
+                
+                if valid:
+                    st.session_state["custom_rooms"] = edited_rooms
+                    st.session_state["nav_result"] = None  # Reset path on map change
+                    st.success("Layout updated successfully!")
+                    st.rerun()
+
         # Form-like inputs without actual st.form, as we want immediate response or simple button
-        destinations = get_destination_rooms()
+        all_rooms = list(st.session_state["custom_rooms"].keys())
+        curr_start = st.session_state.get("nav_start", START_ROOM)
+        
+        st.session_state["nav_start"] = st.selectbox(
+            "Start Room",
+            options=all_rooms,
+            index=all_rooms.index(curr_start) if curr_start in all_rooms else 0
+        )
+        
+        destinations = [rm for rm in all_rooms if rm != st.session_state["nav_start"]]
         curr_dest = st.session_state["nav_destination"]
         
         st.session_state["nav_destination"] = st.selectbox(
@@ -238,17 +277,19 @@ with tab_nav:
         
         if st.button("Find Path", type="primary", use_container_width=True):
             with st.spinner("Calculating optimal route..."):
-                goal_coords = ROOMS[st.session_state["nav_destination"]]
+                start_coords = st.session_state["custom_rooms"][st.session_state["nav_start"]]
+                goal_coords = st.session_state["custom_rooms"][st.session_state["nav_destination"]]
                 try:
                     if st.session_state["nav_algorithm"] == "A*":
-                        path, exp_cnt, exp_ord = astar.search(HOSPITAL_GRID, START_COORDS, goal_coords)
+                        path, exp_cnt, exp_ord = astar.search(HOSPITAL_GRID, start_coords, goal_coords)
                     else:
-                        path, exp_cnt, exp_ord = greedy_bfs.search(HOSPITAL_GRID, START_COORDS, goal_coords)
+                        path, exp_cnt, exp_ord = greedy_bfs.search(HOSPITAL_GRID, start_coords, goal_coords)
                     
                     st.session_state["nav_result"] = {
                         "path": path,
                         "explored_count": exp_cnt,
                         "explored_order": exp_ord,
+                        "start": st.session_state["nav_start"],
                         "destination": st.session_state["nav_destination"],
                         "algorithm": st.session_state["nav_algorithm"]
                     }
@@ -261,7 +302,7 @@ with tab_nav:
             if res["path"]:
                 st.metric(label="Path Length (Steps)", value=len(res["path"]) - 1)
                 st.metric(label="Nodes Explored", value=res["explored_count"])
-                st.success(f"Route found to **{res['destination']}** using **{res['algorithm']}**.")
+                st.success(f"Route found from **{res['start']}** to **{res['destination']}** using **{res['algorithm']}**.")
             else:
                 st.metric(label="Nodes Explored", value=res["explored_count"])
                 st.error("No valid path exists to the selected destination.")
@@ -272,10 +313,14 @@ with tab_nav:
             fig = plot_hospital_grid(
                 path=res["path"],
                 explored=res["explored_order"],
+                start_room=res["start"],
                 destination_room=res["destination"]
             )
         else:
-            fig = plot_hospital_grid()
+            fig = plot_hospital_grid(
+                start_room=st.session_state["nav_start"],
+                destination_room=st.session_state["nav_destination"]
+            )
         
         st.pyplot(fig)
         plt.close(fig)

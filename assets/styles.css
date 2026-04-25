@@ -104,10 +104,6 @@ h3 {
     font-weight: 600 !important;
 }
 
-p, span, label, div {
-    font-family: var(--font-primary) !important;
-}
-
 /* Body text */
 .stMarkdown p,
 .stMarkdown li {
